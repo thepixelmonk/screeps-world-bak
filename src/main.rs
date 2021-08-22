@@ -1,10 +1,18 @@
 use std::collections::HashSet;
 
 use log::*;
-use screeps::{find, prelude::*, Part, ResourceType, ReturnCode, RoomObjectProperties};
 use stdweb::js;
+use screeps::{prelude::*};
+use screeps::objects::{RoomObjectProperties};
+use screeps::constants::find::{SOURCES, MY_CREEPS};
+
+use crate::creeps::Creep;
+use crate::creeps::harvester::Harvester;
+use crate::creeps::upgrader::Upgrader;
 
 mod logging;
+mod spawn;
+mod creeps;
 
 fn main() {
     logging::setup_logging(logging::Info);
@@ -35,31 +43,38 @@ fn game_loop() {
     debug!("loop starting! CPU: {}", screeps::game::cpu::get_used());
 
     debug!("running spawns");
-    for spawn in screeps::game::spawns::values() {
-        debug!("running spawn {}", spawn.name());
-        let body = [Part::Move, Part::Move, Part::Carry, Part::Work];
+    for s in screeps::game::spawns::values() {
+        debug!("running spawn {}", s.name());
+        let spawn = spawn::Spawn { structure: s };
+        let sources = spawn.structure.room().unwrap().find(SOURCES);
+        let harvesters: Vec<screeps::objects::Creep> = spawn.structure.room().unwrap().find(MY_CREEPS).into_iter().filter(|creep| creep.memory().string("role").unwrap().unwrap() == "harvester").collect();
+        let upgraders: Vec<screeps::objects::Creep> = spawn.structure.room().unwrap().find(MY_CREEPS).into_iter().filter(|creep| creep.memory().string("role").unwrap().unwrap() == "upgrader").collect();
+        let spawn_transporters: Vec<screeps::objects::Creep> = spawn.structure.room().unwrap().find(MY_CREEPS).into_iter().filter(|creep| creep.memory().string("role").unwrap().unwrap() == "spawn_transporter").collect();
+        let transport_available = harvesters.len() > 0 && spawn_transporters.len() > 0;
 
-        if spawn.energy() >= body.iter().map(|p| p.cost()).sum() {
-            // create a unique name, spawn.
-            let name_base = screeps::game::time();
-            let mut additional = 0;
-            let res = loop {
-                let name = format!("{}-{}", name_base, additional);
-                let res = spawn.spawn_creep(&body, &name);
-
-                if res == ReturnCode::NameExists {
-                    additional += 1;
-                } else {
-                    break res;
-                }
-            };
-
-            if res != ReturnCode::Ok {
-                warn!("couldn't spawn: {:?}", res);
-            }
+        if harvesters.len() < sources.len() {
+            spawn.spawn_harvester(transport_available);
+        } else if upgraders.len() < sources.len() {
+            spawn.spawn_upgrader(transport_available);
         }
     }
 
+    debug!("running creeps");
+    for creep in screeps::game::creeps::values() {
+        match creep.memory().string("role").unwrap().unwrap().as_str() {
+            "harvester" => {
+                let harvester: Harvester = Creep::new(creep);
+                harvester.run();
+            }
+            "upgrader" => {
+                let upgrader: Upgrader = Creep::new(creep);
+                upgrader.run();
+            }
+            _ => { creep.suicide(); }
+        }
+    }
+
+    /* ---
     debug!("running creeps");
     for creep in screeps::game::creeps::values() {
         let name = creep.name();
@@ -107,7 +122,7 @@ fn game_loop() {
                 warn!("creep room has no controller!");
             }
         }
-    }
+    } --- */
 
     let time = screeps::game::time();
 
@@ -125,7 +140,7 @@ fn cleanup_memory() -> Result<(), Box<dyn std::error::Error>> {
     let screeps_memory = match screeps::memory::root().dict("creeps")? {
         Some(v) => v,
         None => {
-            warn!("not cleaning game creep memory: no Memory.creeps dict");
+            debug!("not cleaning game creep memory: no Memory.creeps dict");
             return Ok(());
         }
     };
